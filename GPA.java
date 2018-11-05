@@ -9,9 +9,12 @@ import ij.process.*;
 import ij.gui.*;
 import java.awt.*;
 import ij.plugin.*;
+import ij.plugin.FFT;
 import ij.plugin.frame.*;
 import ij.plugin.filter.*;
 import static ij.measure.Measurements.MEAN;
+import static ij.measure.Measurements.MEDIAN;
+
 
 public class GPA implements PlugIn
 {
@@ -48,18 +51,30 @@ public class GPA implements PlugIn
 			roiIm=imp.getRoi();
 			if(!doDialog()) return;
 		}
+		//we have to calculate the k value of the reference image now
+		//get_kValue(imp);
 		
-		FHT refFHT = new FHT(pad(imp.duplicate().getProcessor(),maxN));
+		/*FHT refFHT = new FHT(pad(imp.duplicate().getProcessor(),maxN));
 		refFHT.transform();
 		ImagePlus refPS=new ImagePlus("PS of reference",refFHT.getPowerSpectrum());
 		refPS.setRoi(roiPS);
 		ImageStatistics stats = ImageStatistics.getStatistics(refPS.getProcessor());
 		System.out.println(stats.max);
 		refPS.show();
+		*/
+
 		//IJ.doCommand("Make Inverse");
+		
+		complexP.setRoi(roiPS);
+		setRoiToZero(complexP,true,1);
+		setRoiToZero(complexP,true,2);
+		complexP.deleteRoi();
+		FFT fft=new FFT();
+		complexP=fft.inverse(complexP);
+		complexP.show();
+
 		/*
-
-
+		
 		float[] re=(float[])imp.getStack().getPixels(1);
 		float[] im=(float[])imp.getStack().getPixels(2);
 		float[] phase=new float[re.length];
@@ -73,9 +88,9 @@ public class GPA implements PlugIn
 		imst.setPixels(phase,1);
 		ImagePlus imphase=new ImagePlus("Phase",imst);
 		imphase.show();
-
 		*/
-	}
+		
+	}	
 
 	boolean doDialog()
 	{
@@ -166,6 +181,43 @@ public class GPA implements PlugIn
             			c++;
        	 	}
         		return ar2;
+	}
+	
+	//gets k value of Image by calculating mean gradient
+	float[] get_kValue(ImagePlus im)
+	{
+		Convolver conv = new Convolver();
+		ImagePlus gyim=im.duplicate();
+		ImagePlus gxim=im.duplicate();
+		int length=im.getWidth()*im.getHeight();
+		float[] kernel = new float[]{-1,0,1};
+		conv.convolve(gyim.getProcessor(),kernel,1,3);
+		conv.convolve(gxim.getProcessor(),kernel,3,1);
+		ImageStatistics statsgy = ImageStatistics.getStatistics(gyim.getProcessor(), MEDIAN, null);
+		ImageStatistics statsgx = ImageStatistics.getStatistics(gxim.getProcessor(), MEDIAN, null);
+		float kx=(float)statsgx.median;
+		float ky=(float)statsgy.median;
+		System.out.println("ky "+ky+"\tkx"+kx);
+		return new float[]{kx,ky};
+	}
+	
+	void setRoiToZero(ImagePlus im, boolean inverted,int slice)
+	{
+		Roi roi=im.getRoi();
+		float[] ret=new float[im.getWidth()*im.getHeight()];
+		if(roi==null)
+		{
+			System.out.println("Warning, image has no ROI");
+		}
+		Point[] coords=roi.getContainedPoints();
+		if(inverted)
+		{
+			for(int i=0;i<coords.length;++i)
+			ret[coords[i].x+coords[i].y*im.getWidth()]=((float[])(im.getStack().getPixels(slice)))[coords[i].x+im.getWidth()*coords[i].y];
+		}
+		im.getStack().setPixels(ret,slice);
+
+		
 	}
 
 
