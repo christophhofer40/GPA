@@ -9,11 +9,12 @@ import ij.process.*;
 import ij.gui.*;
 import java.awt.*;
 import ij.plugin.*;
-import ij.plugin.FFT;
 import ij.plugin.frame.*;
 import ij.plugin.filter.*;
 import static ij.measure.Measurements.MEAN;
 import static ij.measure.Measurements.MEDIAN;
+import static ij.measure.Measurements.CENTER_OF_MASS;
+import static ij.measure.Measurements.CENTER_OF_MASS;
 
 
 public class GPA implements PlugIn
@@ -26,7 +27,7 @@ public class GPA implements PlugIn
 	int originalWidth;
 	int originalHeight;
 	boolean padded;
-
+        
 	
 
 
@@ -37,65 +38,74 @@ public class GPA implements PlugIn
 		impr = imp.getProcessor();
 		FHT fht=newFHT(impr);
 		fht.transform();
-		ImageStack complexSt = fht.getComplexTransform();
-		ImagePlus complexP = new ImagePlus("Complex Stack",complexSt);
+                ImageStack redPhaseSt= new ImageStack(maxN,maxN,2);//this is the reduced Phase Image as stack
+		ImageStack complexSt = fht.getComplexTransform(); 
 		ImagePlus PS=new ImagePlus("PS of Image",fht.getPowerSpectrum());
 		PS.show();
+                RoiManager rm = RoiManager.getRoiManager();
 		if(!doDialog()) return;
-		Roi roiPS=PS.getRoi();
+                
+		//Roi roiPS=PS.getRoi();
 		Roi roiIm=imp.getRoi();
-		while(roiIm==null ||roiPS==null || 
-			roiPS.getType()!=Roi.OVAL|| roiIm.getType()!=Roi.RECTANGLE)
+                //User input
+                Roi[] rois= rm.getSelectedRoisAsArray();
+		while(rois.length!=2)
 		{
-			roiPS=PS.getRoi();
-			roiIm=imp.getRoi();
 			if(!doDialog()) return;
+                        rois= rm.getSelectedRoisAsArray();
+                        if(rois.length==2) if(rois[0].getType()!=Roi.OVAL || rois[1].getType()!=Roi.OVAL)
+                            System.out.println("WARNING: No round aperture choosen");
 		}
-		//we have to calculate the k value of the reference image now
-		//get_kValue(imp);
-		
-		/*FHT refFHT = new FHT(pad(imp.duplicate().getProcessor(),maxN));
-		refFHT.transform();
-		ImagePlus refPS=new ImagePlus("PS of reference",refFHT.getPowerSpectrum());
-		refPS.setRoi(roiPS);
-		ImageStatistics stats = ImageStatistics.getStatistics(refPS.getProcessor());
-		System.out.println(stats.max);
-		refPS.show();
-		*/
-
-		//IJ.doCommand("Make Inverse");
-		
-		complexP.setRoi(roiPS);
-		setRoiToZero(complexP,true,1);
-		setRoiToZero(complexP,true,2);
-		complexP.deleteRoi();
-		FFT fft=new FFT();
-		complexP=fft.inverse(complexP);
-		complexP.show();
-
-		/*
-		
-		float[] re=(float[])imp.getStack().getPixels(1);
-		float[] im=(float[])imp.getStack().getPixels(2);
-		float[] phase=new float[re.length];
-		int imsize=re.length; 
-		for (int i=0;i<imsize;++i)
-		{	
-			float ph=(float)Math.atan2(im[i],re[i]);
-			phase[i]=ph;
-		}
-		ImageStack imst=new ImageStack(imp.getWidth(),imp.getHeight(),1);
-		imst.setPixels(phase,1);
-		ImagePlus imphase=new ImagePlus("Phase",imst);
-		imphase.show();
-		*/
+                PS.hide();
+                ImageStack maskSt= new ImageStack(maxN,maxN,2);
+                for(int i=0;i<2;++i)
+                {
+                    PS.setRoi(rois[i]);
+                    maskSt.setProcessor(PS.createRoiMask(),i+1);
+                    maskSt.getProcessor(i+1).max(1);
+                }
+		ImagePlus maskP=new ImagePlus("mask",maskSt); 
+                ImagePlus complexP;
+                FFT fft = new FFT();
+                ImageCalculator ic= new ImageCalculator();
+                for (int slice=1;slice<3;slice++)
+                {
+                    complexP = new ImagePlus("Complex Stack",complexSt.duplicate());
+                    complexP.setRoi(rois[slice-1]);
+                    for (int i=1;i<3;++i)
+                    {
+                        complexP.setSlice(i);
+                        maskP.setSlice(slice);
+                        ic.run("Multiply",complexP,maskP ); 
+                    }
+                    fft.inverse(complexP);
+                    //complexP.show();
+                    //has to be replaced by a better code
+                    ImagePlus phaseP= WindowManager.getImage("ack-1");
+                    while (phaseP==null) phaseP= WindowManager.getImage("ack-1");
+                    phaseP.setTitle("Phase "+slice);  
+                    calcPhase(phaseP.getStack());
+                    phaseP.setSlice(3);
+                    phaseP.setRoi(roiIm);
+                    float[] k= get_kValue(phaseP.duplicate().getStack().getProcessor(3));
+                    redPhaseSt.setProcessor(normalizePhase(k[0], k[1], phaseP.getProcessor(),maskSt.getProcessor(slice)).getProcessor(),slice);
+                    redPhaseSt.getProcessor(slice).resetMinAndMax();
+                    
+                }
+                ImagePlus redPhase = new ImagePlus("reduced Phase", redPhaseSt);
+                redPhase.show();
+                /*
+                    
+                
+                
+                */
 		
 	}	
 
 	boolean doDialog()
 	{
 		NonBlockingGenericDialog gd = new NonBlockingGenericDialog(getClass().getSimpleName());
-		gd.addMessage("Please specify aperture in the Power Spectrum and a reference in the real space Image");
+		gd.addMessage("Please add apertures in the Power Spectrum to the ROI Manager and select a reference in the real space Image");
 		gd.showDialog();
 		if (gd.wasCanceled()) return false;
 		return true;
@@ -104,7 +114,7 @@ public class GPA implements PlugIn
 
 	ImageProcessor pad(ImageProcessor ip) 
     	{
-        		originalWidth = ip.getWidth();
+                originalWidth = ip.getWidth();
       		originalHeight = ip.getHeight();
 		maxN = Math.max(originalWidth, originalHeight);
         		int i = 2;
@@ -183,25 +193,27 @@ public class GPA implements PlugIn
         		return ar2;
 	}
 	
-	//gets k value of Image by calculating mean gradient
-	float[] get_kValue(ImagePlus im)
+	//gets k value of Image by calculating median gradient
+	float[] get_kValue(ImageProcessor impr)
 	{
 		Convolver conv = new Convolver();
-		ImagePlus gyim=im.duplicate();
-		ImagePlus gxim=im.duplicate();
-		int length=im.getWidth()*im.getHeight();
+		ImageProcessor gy=impr.duplicate();
+		ImageProcessor gx=impr.duplicate();
+		int length=impr.getWidth()*impr.getHeight();
 		float[] kernel = new float[]{-1,0,1};
-		conv.convolve(gyim.getProcessor(),kernel,1,3);
-		conv.convolve(gxim.getProcessor(),kernel,3,1);
-		ImageStatistics statsgy = ImageStatistics.getStatistics(gyim.getProcessor(), MEDIAN, null);
-		ImageStatistics statsgx = ImageStatistics.getStatistics(gxim.getProcessor(), MEDIAN, null);
-		float kx=(float)statsgx.median;
-		float ky=(float)statsgy.median;
+		conv.convolve(gy,kernel,1,3);
+		conv.convolve(gx,kernel,3,1);
+		//new ImagePlus("y-gradient",gy).show();
+		//new ImagePlus("x-gradient",gx).show();
+		ImageStatistics statsgy = ImageStatistics.getStatistics(gy, MEDIAN, null);
+		ImageStatistics statsgx = ImageStatistics.getStatistics(gx, MEDIAN, null);
+		float kx=(float)statsgx.median/(2*3.1415f);
+		float ky=(float)statsgy.median/(2*3.1415f);;
 		System.out.println("ky "+ky+"\tkx"+kx);
 		return new float[]{kx,ky};
 	}
 	
-	void setRoiToZero(ImagePlus im, boolean inverted,int slice)
+	/*void setRoiToZero(ImagePlus im, boolean inverted,int slice)
 	{
 		Roi roi=im.getRoi();
 		float[] ret=new float[im.getWidth()*im.getHeight()];
@@ -218,7 +230,63 @@ public class GPA implements PlugIn
 		im.getStack().setPixels(ret,slice);
 
 		
+	}*/
+
+	ImageStack FHT_inverse(ImageStack comp)
+	{
+		int w=comp.getWidth();
+		int h= comp.getHeight();
+		ImageStack ret = new ImageStack(w,h,1);
+		float[] retarray=new float[w*h];
+		float[] real = (float[])comp.getPixels(1);
+		float[] im = (float[])comp.getPixels(2);
+		for(int ind=0;ind<w*h;++ind)
+		{
+			retarray[ind]=real[ind]-im[ind];
+		}
+		ret.setPixels(retarray,1);
+		return ret;
 	}
+
+	//adds a slice with the actual Phase Image
+	void calcPhase(ImageStack imst)
+	{
+		if (imst.getSize()!=2)
+		{
+			System.out.println("Warning, not able to calculate Phase Image");
+			return;
+		}	
+		float[] re=(float[])imst.getPixels(1);
+		float[] im=(float[])imst.getPixels(2);
+		float[] phase=new float[re.length];
+		int imsize=re.length; 
+		for (int i=0;i<imsize;++i)
+		{	
+			float ph=(float)Math.atan2(im[i],re[i]);
+			phase[i]=ph;
+		}
+		imst.addSlice("Phase Image",phase);
+	}
+
+	ImagePlus normalizePhase(float kx, float ky, ImageProcessor ip, ImageProcessor mask)
+	{
+		FHT redPhase=new FHT(ip,false);          
+		redPhase.transform();
+                redPhase.swapQuadrants();
+		float shiftx=-kx*ip.getWidth()/2;
+		float shifty=-ky*ip.getHeight()/2;
+		redPhase.translate(shiftx, shifty);
+                ImageStatistics com = ImageStatistics.getStatistics(mask, CENTER_OF_MASS , null);
+                //ImageStatistics ycom = ImageStatistics.getStatistics(mask, CENTER_OF_MASS , null);
+                mask.translate(mask.getWidth()/2-com.xCenterOfMass ,mask.getHeight()/2-com.yCenterOfMass );
+                redPhase=redPhase.multiply(new FHT(mask.duplicate(), true));
+                redPhase.swapQuadrants();             
+		redPhase.inverseTransform();
+		return new ImagePlus("reduced Phase", redPhase);
+		
+	}
+
+
 
 
 }
