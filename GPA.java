@@ -14,7 +14,7 @@ import ij.plugin.filter.*;
 import static ij.measure.Measurements.MEAN;
 import static ij.measure.Measurements.MEDIAN;
 import static ij.measure.Measurements.CENTER_OF_MASS;
-import static ij.measure.Measurements.CENTER_OF_MASS;
+import static ij.measure.Measurements.MIN_MAX;
 
 
 public class GPA implements PlugIn
@@ -27,7 +27,7 @@ public class GPA implements PlugIn
 	int originalWidth;
 	int originalHeight;
 	boolean padded;
-        
+
 	
 
 
@@ -51,19 +51,21 @@ public class GPA implements PlugIn
                 Roi[] rois= rm.getSelectedRoisAsArray();
 		while(rois.length!=2)
 		{
-			if(!doDialog()) return;
-                        rois= rm.getSelectedRoisAsArray();
-                        if(rois.length==2) if(rois[0].getType()!=Roi.OVAL || rois[1].getType()!=Roi.OVAL)
+                    if(!doDialog()) return;
+                    rois= rm.getSelectedRoisAsArray();
+                    if(rois.length==2) if(rois[0].getType()!=Roi.OVAL || rois[1].getType()!=Roi.OVAL)
                             System.out.println("WARNING: No round aperture choosen");
 		}
                 PS.hide();
                 ImageStack maskSt= new ImageStack(maxN,maxN,2);
+                ImageStack displacementSt=new ImageStack(maxN,maxN,2);
                 for(int i=0;i<2;++i)
                 {
                     PS.setRoi(rois[i]);
                     maskSt.setProcessor(PS.createRoiMask(),i+1);
                     maskSt.getProcessor(i+1).max(1);
                 }
+                Point[] g = calcRecirocals(PS,rois);
 		ImagePlus maskP=new ImagePlus("mask",maskSt); 
                 ImagePlus complexP;
                 FFT fft = new FFT();
@@ -84,21 +86,16 @@ public class GPA implements PlugIn
                     ImagePlus phaseP= WindowManager.getImage("ack-1");
                     while (phaseP==null) phaseP= WindowManager.getImage("ack-1");
                     phaseP.setTitle("Phase "+slice);  
-                    calcPhase(phaseP.getStack());
-                    phaseP.setSlice(3);
-                    phaseP.setRoi(roiIm);
-                    float[] k= get_kValue(phaseP.duplicate().getStack().getProcessor(3));
-                    redPhaseSt.setProcessor(normalizePhase(k[0], k[1], phaseP.getProcessor(),maskSt.getProcessor(slice)).getProcessor(),slice);
+                    calcPhase(phaseP.getStack());                     
+                    redPhaseSt.setProcessor(normalizePhase(g[slice-1].x, g[slice-1].y, phaseP.getProcessor(),maskSt.getProcessor(slice)).getProcessor(),slice);
+                    redPhaseSt.getProcessor(slice).setRoi(roiIm);  
+                    //float[] k= get_kValue(redPhaseSt.getProcessor(slice).crop());
                     redPhaseSt.getProcessor(slice).resetMinAndMax();
+                    phaseP.hide();
                     
                 }
                 ImagePlus redPhase = new ImagePlus("reduced Phase", redPhaseSt);
-                redPhase.show();
-                /*
-                    
-                
-                
-                */
+                redPhase.show();                
 		
 	}	
 
@@ -106,8 +103,12 @@ public class GPA implements PlugIn
 	{
 		NonBlockingGenericDialog gd = new NonBlockingGenericDialog(getClass().getSimpleName());
 		gd.addMessage("Please add apertures in the Power Spectrum to the ROI Manager and select a reference in the real space Image");
+                //gd.addNummericField("a1",1.42,3);
+                //gd.addNummericField("a2",1.42,3);
 		gd.showDialog();
 		if (gd.wasCanceled()) return false;
+                //a1=(float)gd.getNextNumber();
+                //a2=(float)gd.getNextNumber();
 		return true;
 	}
 
@@ -273,8 +274,8 @@ public class GPA implements PlugIn
 		FHT redPhase=new FHT(ip,false);          
 		redPhase.transform();
                 redPhase.swapQuadrants();
-		float shiftx=-kx*ip.getWidth()/2;
-		float shifty=-ky*ip.getHeight()/2;
+		float shiftx=-kx+ip.getWidth()/2;
+		float shifty=-ky+ip.getHeight()/2;
 		redPhase.translate(shiftx, shifty);
                 ImageStatistics com = ImageStatistics.getStatistics(mask, CENTER_OF_MASS , null);
                 //ImageStatistics ycom = ImageStatistics.getStatistics(mask, CENTER_OF_MASS , null);
@@ -286,6 +287,35 @@ public class GPA implements PlugIn
 		
 	}
 
+        Point[] calcRecirocals(ImagePlus PS, Roi[] rois)
+        {
+            Point[] g=new Point[rois.length];
+            ImageProcessor ip = PS.getProcessor();
+            int i=0;
+            for(Roi roi:rois)
+            {
+                float max=-1;
+                PS.deleteRoi();
+                PS.setRoi(roi);
+                Point maxPoint=null;
+                Point[] points=roi.getContainedPoints();
+                for(Point point:points)
+                {   
+                    float val=ip.getPixelValue(point.x,point.y);
+                    if(val>max)
+                    {
+                        max=val;
+                        maxPoint=(Point)point.clone();
+                    }
+                }
+                g[i]=maxPoint;
+                i++;
+                //System.out.println("g:\t"+maxPoint.x+" "+maxPoint.y);
+            }
+            return g;
+        }
+
+       
 
 
 
