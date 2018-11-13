@@ -15,7 +15,7 @@ import static ij.measure.Measurements.MEAN;
 import static ij.measure.Measurements.MEDIAN;
 import static ij.measure.Measurements.CENTER_OF_MASS;
 import static ij.measure.Measurements.MIN_MAX;
-
+import java.util.Arrays;
 
 public class GPA implements PlugIn
 {
@@ -58,7 +58,6 @@ public class GPA implements PlugIn
 		}
                 PS.hide();
                 ImageStack maskSt= new ImageStack(maxN,maxN,2);
-                ImageStack displacementSt=new ImageStack(maxN,maxN,2);
                 for(int i=0;i<2;++i)
                 {
                     PS.setRoi(rois[i]);
@@ -86,18 +85,30 @@ public class GPA implements PlugIn
                     ImagePlus phaseP= WindowManager.getImage("ack-1");
                     while (phaseP==null) phaseP= WindowManager.getImage("ack-1");
                     phaseP.setTitle("Phase "+slice);  
+                    phaseP.hide();
                     calcPhase(phaseP.getStack());                     
                     redPhaseSt.setProcessor(normalizePhase(g[slice-1].x, g[slice-1].y, phaseP.getProcessor(),maskSt.getProcessor(slice)).getProcessor(),slice);
-                    redPhaseSt.getProcessor(slice).setRoi(roiIm);  
-                    //float[] k= get_kValue(redPhaseSt.getProcessor(slice).crop());
+                    redPhaseSt.getProcessor(slice).setRoi(roiIm);              
                     redPhaseSt.getProcessor(slice).resetMinAndMax();
-                    phaseP.hide();
+                    //
                     
                 }
                 ImagePlus redPhase = new ImagePlus("reduced Phase", redPhaseSt);
-                redPhase.show();                
-		
-	}	
+                Point[] k= get_kValues(redPhase,roiIm);
+                redPhase.show();        
+                ImageStack displSt = calculateDisplacement(redPhaseSt,g);
+                ImagePlus displP = new ImagePlus("Displacement Field", displSt);
+                displP.show();
+                /*
+		ImageStack distortionSt=calculateDistortion(displSt);
+                ImagePlus distortionP = new ImagePlus("Distortion",distortionSt);
+                distortionSt.setSliceLabel("e_xx",1);
+                distortionSt.setSliceLabel("e_xy",1);
+                distortionSt.setSliceLabel("e_yx",1);
+                distortionSt.setSliceLabel("e_yy",1);
+                distortionP.show();
+		*/
+        }
 
 	boolean doDialog()
 	{
@@ -195,23 +206,33 @@ public class GPA implements PlugIn
 	}
 	
 	//gets k value of Image by calculating median gradient
-	float[] get_kValue(ImageProcessor impr)
+	Point[] get_kValue(ImagePlus imphase, Roi roi)
 	{
-		Convolver conv = new Convolver();
-		ImageProcessor gy=impr.duplicate();
-		ImageProcessor gx=impr.duplicate();
-		int length=impr.getWidth()*impr.getHeight();
-		float[] kernel = new float[]{-1,0,1};
-		conv.convolve(gy,kernel,1,3);
-		conv.convolve(gx,kernel,3,1);
+                Convolver conv = new Convolver();	
+                imphase.setRoi(roi);
+                int size=imphase.getImageStackSize();
+                Point[] points=new Point[size];
+                int length=imphase.getWidth()*imphase.getHeight();
+                for(int i=0;i<size;i++)
+                {
+                    imphase.setSlice(i+1);
+                    ImageProcessor gx=imphase.duplicate().getProcessor();
+                    ImageProcessor gy=imphase.duplicate().getProcessor();
+                    float[] kernel = new float[]{-1,0,1};
+                    ImageStatistics statsgx = ImageStatistics.getStatistics(gx, MEDIAN, null);
+                    ImageStatistics statsgy = ImageStatistics.getStatistics(gy, MEDIAN, null);
+                    conv.convolve(gy,kernel,1,3);
+                    conv.convolve(gx,kernel,3,1);
+                    float kx=(float)statsgx.median/(2*3.1415f);
+                    float ky=(float)statsgy.median/(2*3.1415f);
+                    System.out.println("ky "+ky+"\tkx"+kx);
+                    points[i]=new Point();
+                    points.setLocation(kx,ky);
+                }
+
 		//new ImagePlus("y-gradient",gy).show();
 		//new ImagePlus("x-gradient",gx).show();
-		ImageStatistics statsgy = ImageStatistics.getStatistics(gy, MEDIAN, null);
-		ImageStatistics statsgx = ImageStatistics.getStatistics(gx, MEDIAN, null);
-		float kx=(float)statsgx.median/(2*3.1415f);
-		float ky=(float)statsgy.median/(2*3.1415f);;
-		System.out.println("ky "+ky+"\tkx"+kx);
-		return new float[]{kx,ky};
+		return points;
 	}
 	
 	/*void setRoiToZero(ImagePlus im, boolean inverted,int slice)
@@ -282,7 +303,17 @@ public class GPA implements PlugIn
                 mask.translate(mask.getWidth()/2-com.xCenterOfMass ,mask.getHeight()/2-com.yCenterOfMass );
                 redPhase=redPhase.multiply(new FHT(mask.duplicate(), true));
                 redPhase.swapQuadrants();             
-		redPhase.inverseTransform();
+		redPhase.inverseTransform();       
+                float maxval=(float)ImageStatistics.getStatistics(redPhase, MIN_MAX , null).max;
+                float minval=(float)ImageStatistics.getStatistics(redPhase, MIN_MAX , null).min;
+                float[] normed=new float[redPhase.getWidth()*redPhase.getHeight()];
+                int i=0;
+                for(float val:(float[])redPhase.getPixels())
+                {
+                    normed[i]=(val-minval)*2*3.1415f/(maxval-minval);
+                    i++;
+                }
+                redPhase.setPixels(normed);
 		return new ImagePlus("reduced Phase", redPhase);
 		
 	}
@@ -315,7 +346,43 @@ public class GPA implements PlugIn
             return g;
         }
 
-       
+        ImageStack calculateDisplacement(ImageStack Phaseimages, Point[] g)
+        {
+            ImageStack displSt= new ImageStack(Phaseimages.getWidth(), Phaseimages.getHeight(),2);
+            int length=Phaseimages.getWidth()*Phaseimages.getHeight();
+            float[] phase1=(float[])Phaseimages.getPixels(1);
+            float[] phase2=(float[])Phaseimages.getPixels(2);
+            float[] ux=new float[length];
+            float[] uy=new float[length];
+            for(int j=0;j<length;j++)
+            {
+                float g1x=(g[0].x);
+                float g1y=(g[0].y);
+                float g2x=(g[1].x);
+                float g2y=(g[1].y);
+                ux[j]=-1/(2*3.1415f)*(1/(g1x*g2y-g1y*g2x)*(g2y*phase1[j]-g1y*phase2[j]));
+                uy[j]=-1/(2*3.1415f)*(1/(g1x*g2y-g1y*g2x)*(-g2x*phase1[j]+g1x*phase2[j]));
+            }
+            displSt.setPixels(ux,1);
+            displSt.setPixels(uy,2);
+            return displSt;
+        }
+
+       ImageStack calculateDistortion(ImageStack displSt)
+       {
+            ImageStack distortionSt = new ImageStack(displSt.getWidth(),displSt.getHeight(),4);
+            distortionSt.setPixels(displSt.getPixels(1),1);
+            distortionSt.setPixels(displSt.getPixels(1),2);
+            distortionSt.setPixels(displSt.getPixels(2),3);
+            distortionSt.setPixels(displSt.getPixels(2),4);
+            Convolver conv = new Convolver();	
+            float[] kernel = new float[]{-1,0,1};
+            conv.convolve(distortionSt.getProcessor(1),kernel,3,1); //exx
+            conv.convolve(distortionSt.getProcessor(2),kernel,1,3);//exy
+            conv.convolve(distortionSt.getProcessor(3),kernel,3,1); //eyx
+            conv.convolve(distortionSt.getProcessor(4),kernel,1,3);//eyy      
+            return distortionSt;
+       }
 
 
 
