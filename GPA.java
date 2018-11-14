@@ -15,6 +15,8 @@ import static ij.measure.Measurements.MEAN;
 import static ij.measure.Measurements.MEDIAN;
 import static ij.measure.Measurements.CENTER_OF_MASS;
 import static ij.measure.Measurements.MIN_MAX;
+import static ij.measure.Measurements.STD_DEV;
+import ij.process.ImageConverter;
 import java.util.Arrays;
 
 public class GPA implements PlugIn
@@ -86,28 +88,44 @@ public class GPA implements PlugIn
                     while (phaseP==null) phaseP= WindowManager.getImage("ack-1");
                     phaseP.setTitle("Phase "+slice);  
                     phaseP.hide();
+                    ImageProcessor mask=maskSt.getProcessor(slice);
+                    ImageStatistics com = ImageStatistics.getStatistics(mask, CENTER_OF_MASS , null);
+                    mask.translate(mask.getWidth()/2-com.xCenterOfMass ,mask.getHeight()/2-com.yCenterOfMass );
+                    GaussianBlur gb=new GaussianBlur();
+                    //System.out.println(rois[slice-1].getLength());
+                    
+                    //gb.blurGaussian(mask,rois[slice-1].getLength()/(2*3.1415));
                     calcPhase(phaseP.getStack());                     
-                    redPhaseSt.setProcessor(normalizePhase(g[slice-1].x, g[slice-1].y, phaseP.getProcessor(),maskSt.getProcessor(slice)).getProcessor(),slice);
-                    redPhaseSt.getProcessor(slice).setRoi(roiIm);              
-                    redPhaseSt.getProcessor(slice).resetMinAndMax();
-                    //
+                    //redPhaseSt.setProcessor(normalizePhase(g[slice-1].x, g[slice-1].y, phaseP.getProcessor(),mask),slice);
+                    //redPhaseSt.getProcessor(slice).resetMinAndMax();
+                    phaseP.setSliceWithoutUpdate(3);
+                    redPhaseSt.setProcessor(minimizePhase(phaseP.getProcessor(), roiIm,mask,g[slice-1]),slice);
                     
                 }
-                ImagePlus redPhase = new ImagePlus("reduced Phase", redPhaseSt);
-                Point[] k= get_kValues(redPhase,roiIm);
+                maskP.show();
+                
+                //now minimizing phase in ROI
+                //Point[] k= get_kValues(redPhaseSt,roiIm);
+                /*for (int slice=1;slice<3;slice++)
+                {
+                    redPhaseSt.setProcessor(normalizePhase(k[slice-1].x, k[slice-1].y, redPhaseSt.getProcessor(slice),maskSt.getProcessor(slice)),slice);
+                }*/
+                ImagePlus redPhase = new ImagePlus("reduced Phase", redPhaseSt);               
                 redPhase.show();        
-                ImageStack displSt = calculateDisplacement(redPhaseSt,g);
+                ImageStack displSt = calculateDisplacement(redPhaseSt.duplicate(),g);
+                displSt.setSliceLabel("displacement x",1);
+                displSt.setSliceLabel("displacement y",2);
                 ImagePlus displP = new ImagePlus("Displacement Field", displSt);
                 displP.show();
-                /*
-		ImageStack distortionSt=calculateDistortion(displSt);
+                
+		ImageStack distortionSt=calculateDistortion(displSt.duplicate());
                 ImagePlus distortionP = new ImagePlus("Distortion",distortionSt);
                 distortionSt.setSliceLabel("e_xx",1);
-                distortionSt.setSliceLabel("e_xy",1);
-                distortionSt.setSliceLabel("e_yx",1);
-                distortionSt.setSliceLabel("e_yy",1);
+                distortionSt.setSliceLabel("e_xy",2);
+                distortionSt.setSliceLabel("e_yx",3);
+                distortionSt.setSliceLabel("e_yy",4);
                 distortionP.show();
-		*/
+		
         }
 
 	boolean doDialog()
@@ -206,32 +224,33 @@ public class GPA implements PlugIn
 	}
 	
 	//gets k value of Image by calculating median gradient
-	Point[] get_kValue(ImagePlus imphase, Roi roi)
+	Point[] get_kValues(ImageStack imphase, Roi roi)
 	{
                 Convolver conv = new Convolver();	
-                imphase.setRoi(roi);
-                int size=imphase.getImageStackSize();
+                
+                int size=imphase.getSize();
                 Point[] points=new Point[size];
                 int length=imphase.getWidth()*imphase.getHeight();
                 for(int i=0;i<size;i++)
                 {
-                    imphase.setSlice(i+1);
-                    ImageProcessor gx=imphase.duplicate().getProcessor();
-                    ImageProcessor gy=imphase.duplicate().getProcessor();
-                    float[] kernel = new float[]{-1,0,1};
-                    ImageStatistics statsgx = ImageStatistics.getStatistics(gx, MEDIAN, null);
-                    ImageStatistics statsgy = ImageStatistics.getStatistics(gy, MEDIAN, null);
+                    imphase.getProcessor(i+1).setRoi(roi);
+                    ImageProcessor gx=imphase.duplicate().getProcessor(i+1);
+                    ImageProcessor gy=imphase.duplicate().getProcessor(i+1);
+                    float[] kernel = new float[]{-1,0,1}; 
                     conv.convolve(gy,kernel,1,3);
                     conv.convolve(gx,kernel,3,1);
+                    ImageStatistics statsgx = ImageStatistics.getStatistics(gx, MEDIAN, null);
+                    ImageStatistics statsgy = ImageStatistics.getStatistics(gy, MEDIAN, null);
                     float kx=(float)statsgx.median/(2*3.1415f);
                     float ky=(float)statsgy.median/(2*3.1415f);
                     System.out.println("ky "+ky+"\tkx"+kx);
                     points[i]=new Point();
-                    points.setLocation(kx,ky);
+                    points[i].setLocation(kx,ky);  
+                    //new ImagePlus("y-gradient",gy).show();
+                    //new ImagePlus("x-gradient",gx).show();
                 }
 
-		//new ImagePlus("y-gradient",gy).show();
-		//new ImagePlus("x-gradient",gx).show();
+		
 		return points;
 	}
 	
@@ -290,17 +309,15 @@ public class GPA implements PlugIn
 		imst.addSlice("Phase Image",phase);
 	}
 
-	ImagePlus normalizePhase(float kx, float ky, ImageProcessor ip, ImageProcessor mask)
+	ImageProcessor normalizePhase(float kx, float ky, ImageProcessor ip, ImageProcessor mask)
 	{
-		FHT redPhase=new FHT(ip,false);          
+		FHT redPhase=new FHT(ip.duplicate(),false);          
 		redPhase.transform();
                 redPhase.swapQuadrants();
-		float shiftx=-kx+ip.getWidth()/2;
-		float shifty=-ky+ip.getHeight()/2;
+		float shiftx=kx;
+		float shifty=ky;
 		redPhase.translate(shiftx, shifty);
-                ImageStatistics com = ImageStatistics.getStatistics(mask, CENTER_OF_MASS , null);
-                //ImageStatistics ycom = ImageStatistics.getStatistics(mask, CENTER_OF_MASS , null);
-                mask.translate(mask.getWidth()/2-com.xCenterOfMass ,mask.getHeight()/2-com.yCenterOfMass );
+                
                 redPhase=redPhase.multiply(new FHT(mask.duplicate(), true));
                 redPhase.swapQuadrants();             
 		redPhase.inverseTransform();       
@@ -310,13 +327,55 @@ public class GPA implements PlugIn
                 int i=0;
                 for(float val:(float[])redPhase.getPixels())
                 {
-                    normed[i]=(val-minval)*2*3.1415f/(maxval-minval);
+                    normed[i]=(val-minval)*2*3.1415f/(maxval-minval)-3.1415f;
                     i++;
                 }
                 redPhase.setPixels(normed);
-		return new ImagePlus("reduced Phase", redPhase);
+		return redPhase;
 		
 	}
+        
+        //probably not the fastest
+        ImageProcessor minimizePhase(ImageProcessor phasePr, Roi ref,ImageProcessor mask, Point g)
+        {
+  
+            IJ.showStatus("Minimizing phase");
+            float[] steps= new float[]{1,1};
+            steps= new float[2];
+            ImageProcessor newPr=normalizePhase(g.x,g.y, phasePr,mask);
+            newPr.setRoi(ref);
+            float oldphase=(float)ImageStatistics.getStatistics(newPr, STD_DEV , null).stdDev;
+            System.out.println("old phase:\t"+oldphase);
+            ImageProcessor retPr=newPr.duplicate();
+            float[] shift=new float[2];
+            while(Math.abs(steps[0])>0.01 || Math.abs(steps[1])>0.01)
+            {
+                for(int i=0;i<2;++i)
+                {
+                    shift[i]+=steps[i];
+                    newPr=normalizePhase(g.x+shift[0],g.y+shift[1], phasePr,mask);
+                    newPr.setRoi(ref);
+                    float newphase = (float)ImageStatistics.getStatistics(newPr, STD_DEV , null).stdDev;
+                    System.out.println("new phase:\t"+newphase+"\t with shift\t"+shift[0]+" "+shift[1]);
+                    if(newphase<oldphase)
+                    {
+                        oldphase=newphase;
+                        retPr=newPr.duplicate();
+                        steps[i]*=1.1;
+                        System.out.println("new merit:\t"+oldphase);
+                    }
+                    else
+                    {
+                        shift[i]-=steps[i];
+                        steps[i]*=-0.7;
+                    }
+                }
+
+            }
+            System.out.println("FFT shifted by\t"+shift[0]+" "+shift[1]);
+            IJ.showStatus("DONE");
+            return retPr;
+        }
 
         Point[] calcRecirocals(ImagePlus PS, Roi[] rois)
         {
@@ -343,6 +402,10 @@ public class GPA implements PlugIn
                 i++;
                 //System.out.println("g:\t"+maxPoint.x+" "+maxPoint.y);
             }
+            g[0].x=-g[0].x+PS.getWidth()/2;
+            g[0].y=-g[0].y+PS.getHeight()/2;
+            g[1].x=-g[1].x+PS.getWidth()/2;
+            g[1].y=-g[1].y+PS.getHeight()/2;
             return g;
         }
 
@@ -371,10 +434,10 @@ public class GPA implements PlugIn
        ImageStack calculateDistortion(ImageStack displSt)
        {
             ImageStack distortionSt = new ImageStack(displSt.getWidth(),displSt.getHeight(),4);
-            distortionSt.setPixels(displSt.getPixels(1),1);
-            distortionSt.setPixels(displSt.getPixels(1),2);
-            distortionSt.setPixels(displSt.getPixels(2),3);
-            distortionSt.setPixels(displSt.getPixels(2),4);
+            distortionSt.setPixels(((float[])displSt.getPixels(1)).clone(),1);
+            distortionSt.setPixels(((float[])displSt.getPixels(1)).clone(),2);
+            distortionSt.setPixels(((float[])displSt.getPixels(2)).clone(),3);
+            distortionSt.setPixels(((float[])displSt.getPixels(2)).clone(),4);
             Convolver conv = new Convolver();	
             float[] kernel = new float[]{-1,0,1};
             conv.convolve(distortionSt.getProcessor(1),kernel,3,1); //exx
